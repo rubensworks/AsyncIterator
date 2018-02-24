@@ -1180,9 +1180,12 @@ SimpleTransformIterator.prototype._insert = function (inserter, done) {
   @param {Function} [options.transform] A function to asynchronously transform items from the source
   @param {Array|AsyncIterator} [options.prepend] Items to insert before the source items
   @param {Array|AsyncIterator} [options.append]  Items to insert after the source items
+  @param {boolean} [options.autoStart=false] Whether buffering starts directly after construction
   @returns {AsyncIterator} A new iterator that maps the items from this iterator
 **/
 AsyncIterator.prototype.transform = function (options) {
+  if (!('autoStart' in options))
+    options.autoStart = false;
   return new SimpleTransformIterator(this, options);
 };
 

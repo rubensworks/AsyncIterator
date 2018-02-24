@@ -1501,5 +1501,89 @@ describe('SimpleTransformIterator', function () {
         });
       });
     });
+
+    describe('when called on an iterator without autoStart', function () {
+      var iterator, map, prepend, append, result;
+      before(function () {
+        var i = 0, items = ['a', 'b', 'c', 'd', 'e', 'f'];
+        iterator = new BufferedIterator({ autoStart: false });
+        iterator._read = sinon.spy(function (count, done) {
+          if (items.length)
+            this._push(items.shift());
+          else
+            this.close();
+          done();
+        });
+        map = function (item) { return item + (++i); };
+        prepend = new ArrayIterator(['i', 'ii', 'iii']);
+        append  = new ArrayIterator(['I', 'II', 'III']);
+        result = iterator.transform({
+          map: map, prepend: prepend, append: append,
+          offset: 2, limit: 3,
+        });
+      });
+
+      describe('before attaching a data listener', function () {
+        it('should not read the source iterator', function () {
+          iterator._read.should.not.have.been.called;
+        });
+      });
+
+      describe('after attaching a data listener', function () {
+        describe('the return value', function () {
+          var items = [];
+          before(function (done) {
+            result.on('data', function (item) { items.push(item); });
+            result.on('end', done);
+          });
+
+          it('should transform the items', function () {
+            items.should.deep.equal(['i', 'ii', 'iii', 'c1', 'd2', 'e3', 'I', 'II', 'III']);
+          });
+        });
+      });
+    });
+
+    describe('when called on an iterator without autoStart but with the autoStart option set', function () {
+      var iterator, map, prepend, append, result;
+      before(function () {
+        var i = 0, items = ['a', 'b', 'c', 'd', 'e', 'f'];
+        iterator = new BufferedIterator({ autoStart: false });
+        iterator._read = sinon.spy(function (count, done) {
+          if (items.length)
+            this._push(items.shift());
+          else
+            this.close();
+          done();
+        });
+        map = function (item) { return item + (++i); };
+        prepend = new ArrayIterator(['i', 'ii', 'iii']);
+        append  = new ArrayIterator(['I', 'II', 'III']);
+        result = iterator.transform({
+          map: map, prepend: prepend, append: append,
+          offset: 2, limit: 3, autoStart: true,
+        });
+      });
+
+      describe('before attaching a data listener', function () {
+        it('should read the source iterator', function () {
+          iterator._read.should.have.been.called;
+        });
+      });
+
+      describe('after attaching a data listener', function () {
+        describe('the return value', function () {
+          var items = [];
+          before(function (done) {
+            result.on('data', function (item) { items.push(item); });
+            result.on('end', done);
+          });
+
+          it('should transform the items', function () {
+            items.should.deep.equal(['i', 'ii', 'iii', 'c1', 'd2', 'e3', 'I', 'II', 'III']);
+          });
+        });
+      });
+    });
   });
 });
