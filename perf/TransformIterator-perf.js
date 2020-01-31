@@ -1,3 +1,5 @@
+Error.stackTraceLimit = 50;
+
 var AsyncIterator = require('../asynciterator').AsyncIterator;
 
 /*

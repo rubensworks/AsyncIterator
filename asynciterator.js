@@ -1,6 +1,16 @@
 var EventEmitter = require('events').EventEmitter;
 
 /**
+ The maximum allowed recursion of `setReadable` calls within a `setImmediate` context.
+ If this limit is exceeded, then a new `setImmediate` context should be invoked.
+
+ @name AsyncIterator.MAX_SET_IMMEDIATE_DEPTH
+ @type integer
+ @protected
+ */
+var MAX_SET_IMMEDIATE_DEPTH = 2048;
+
+/**
   Names of possible iterator states.
   The state's position in the array corresponds to its ID.
 
@@ -282,17 +292,36 @@ function endAsync(self) { setImmediate(end, self); }
 Object.defineProperty(AsyncIterator.prototype, 'readable', {
   get: function () { return this._readable; },
   set: function (readable) {
-    readable = !!readable && !this.done;
-    // Set the readable value only if it has changed
-    if (this._readable !== readable) {
-      this._readable = readable;
-      // If the iterator became readable, emit the `readable` event
-      if (readable)
-        setImmediate(emit, this, 'readable');
-    }
+    this._setReadable(readable, false);
   },
   enumerable: true,
 });
+
+/**
+  Gets or sets whether this iterator might have items available for read.
+
+  This is equivalent to the readable getter and setter,
+  but has a `setImmediateDepth` parameter.
+
+  @param {boolean} [readable] If items might be are available.
+  @param {number?} [setImmediateDepth] The recursion depth of `setReadable` calls within a `setImmediate` context.
+  @protected
+  @emits AsyncIterator.readable
+ */
+AsyncIterator.prototype._setReadable = function (readable, setImmediateDepth) {
+  readable = !!readable && !this.done;
+  // Set the readable value only if it has changed
+  if (this._readable !== readable) {
+    this._readable = readable;
+    // If the iterator became readable, emit the `readable` event
+    if (readable) {
+      if (setImmediateDepth && setImmediateDepth < MAX_SET_IMMEDIATE_DEPTH)
+        this.emit('readable', setImmediateDepth + 1);
+      else
+        setImmediate(emit, this, 'readable');
+    }
+  }
+};
 
 /**
   Gets whether the iterator has stopped generating new items.
@@ -370,10 +399,10 @@ function waitForDataListener(eventName) {
   }
 }
 // Emits new items though `data` events as long as there are `data` listeners
-function emitData() {
+function emitData(setImmediateDepth) {
   // While there are `data` listeners and items, emit them
   var item;
-  while (this._hasListeners('data') && (item = this.read()) !== null)
+  while (this._hasListeners('data') && (item = this.read(setImmediateDepth)) !== null)
     this.emit('data', item);
   // Stop draining the source if there are no more `data` listeners
   if (!this._hasListeners('data') && !this.done) {
@@ -762,9 +791,10 @@ BufferedIterator.prototype._begin = function (done) { done(); };
 
   If the buffer is empty,
   this method calls {@link BufferedIterator#_read} to fetch items.
+  @param {number?} [setImmediateDepth] The recursion depth of `setReadable` calls within a `setImmediate` context.
   @returns {object?} The next item, or `null` if none is available
 **/
-BufferedIterator.prototype.read = function () {
+BufferedIterator.prototype.read = function (setImmediateDepth) {
   if (this.done)
     return null;
 
@@ -781,7 +811,7 @@ BufferedIterator.prototype.read = function () {
   if (!this._reading && buffer.length < this._maxBufferSize) {
     // If the iterator is not closed and thus may still generate new items, fill the buffer
     if (!this.closed)
-      fillBufferAsync(this);
+      fillBufferAsync(this, setImmediateDepth);
     // No new items will be generated, so if none are buffered, the iterator ends here
     else if (!buffer.length)
       endAsync(this);
@@ -798,6 +828,7 @@ BufferedIterator.prototype.read = function () {
   @protected
   @param {integer} count The number of items to generate
   @param {function} done To be called when reading is complete
+  @param {number?} [setImmediateDepth] The recursion depth of `setReadable` calls within a `setImmediate` context.
 **/
 BufferedIterator.prototype._read = function (count, done) { done(); };
 
@@ -806,13 +837,14 @@ BufferedIterator.prototype._read = function (count, done) { done(); };
 
   @protected
   @param {object} item The item to add
+  @param {number?} [setImmediateDepth] The recursion depth of `setReadable` calls within a `setImmediate` context.
   @emits AsyncIterator.readable
 **/
-BufferedIterator.prototype._push = function (item) {
+BufferedIterator.prototype._push = function (item, setImmediateDepth) {
   if (!this.done) {
     this._pushedCount++;
     this._buffer.push(item);
-    this.readable = true;
+    this._setReadable(true, setImmediateDepth);
   }
 };
 
@@ -821,10 +853,11 @@ BufferedIterator.prototype._push = function (item) {
 
   This method calls {@link BufferedIterator#_read} to fetch items.
 
+  @param {number?} [setImmediateDepth] The recursion depth of `setReadable` calls within a `setImmediate` context.
   @protected
   @emits AsyncIterator.readable
 **/
-BufferedIterator.prototype._fillBuffer = function () {
+BufferedIterator.prototype._fillBuffer = function (setImmediateDepth) {
   var self = this, neededItems;
   // Avoid recursive reads
   if (this._reading)
@@ -847,29 +880,32 @@ BufferedIterator.prototype._fillBuffer = function () {
       // If the iterator was closed while reading, complete closing
       if (self.closed)
         self._completeClose();
-      // If the iterator pushed one or more items,
-      // it might currently be able to generate additional items
+        // If the iterator pushed one or more items,
+        // it might currently be able to generate additional items
       // (even though all pushed items might already have been read)
       else if (self._pushedCount) {
-        self.readable = true;
+        self._setReadable(true, setImmediateDepth);
         // If the buffer is insufficiently full, continue filling
         if (self._buffer.length < self._maxBufferSize / 2)
-          fillBufferAsync(self);
+          fillBufferAsync(self, setImmediateDepth);
       }
-    });
+    }, setImmediateDepth);
   }
 };
-function fillBufferAsync(self) {
+function fillBufferAsync(self, setImmediateDepth) {
   // Acquire reading lock to avoid recursive reads
   if (!self._reading) {
     self._reading = true;
-    setImmediate(fillBufferAsyncCallback, self);
+    if (setImmediateDepth)
+      fillBufferAsyncCallback(self, setImmediateDepth + 1);
+    else
+      setImmediate(fillBufferAsyncCallback, self, 1);
   }
 }
-function fillBufferAsyncCallback(self) {
+function fillBufferAsyncCallback(self, setImmediateDepth) {
   // Release reading lock so _fillBuffer` can take it
   self._reading = false;
-  self._fillBuffer();
+  self._fillBuffer(setImmediateDepth);
 }
 
 /**
@@ -1001,7 +1037,7 @@ Object.defineProperty(TransformIterator.prototype, 'source', {
 function getSource() { return this._source; }
 function destinationEmitError(error) { this._destination.emit('error', error); }
 function destinationCloseWhenDone()  { this._destination._closeWhenDone(); }
-function destinationFillBuffer()     { this._destination._fillBuffer(); }
+function destinationFillBuffer(setImmediateDepth) { this._destination._fillBuffer(setImmediateDepth); }
 
 /**
   Validates whether the given iterator can be used as a source.
@@ -1020,21 +1056,25 @@ TransformIterator.prototype._validateSource = function (source, allowDestination
 };
 
 /* Tries to read a transformed item */
-TransformIterator.prototype._read = function (count, done) {
+TransformIterator.prototype._read = function (count, done, setImmediateDepth) {
   var self = this;
   readAndTransform(self, function next() {
     // Continue transforming until at least `count` items have been pushed
-    if (self._pushedCount < count && !self.closed)
-      setImmediate(readAndTransform, self, next, done);
+    if (self._pushedCount < count && !self.closed) {
+      if (setImmediateDepth && setImmediateDepth < MAX_SET_IMMEDIATE_DEPTH)
+        readAndTransform(self, next, setImmediateDepth, done);
+      else
+        setImmediate(readAndTransform, self, next, 1, done);
+    }
     else
       done();
-  }, done);
+  }, setImmediateDepth, done);
 };
-function readAndTransform(self, next, done) {
+function readAndTransform(self, next, setImmediateDepth, done) {
   // If the source exists and still can read items,
   // try to read and transform the next item.
   var source = self._source, item;
-  if (source && !source.ended && (item = source.read()) !== null) {
+  if (source && !source.ended && (item = source.read(setImmediateDepth)) !== null) {
     if (!self._optional)
       self._transform(item, next);
     else
@@ -1164,13 +1204,16 @@ SimpleTransformIterator.prototype._map = null;
 SimpleTransformIterator.prototype._transform = null;
 
 /* Tries to read and transform items */
-SimpleTransformIterator.prototype._read = function (count, done) {
+SimpleTransformIterator.prototype._read = function (count, done, setImmediateDepth) {
   var self = this;
   readAndTransformSimple(self, count, function next() {
-    setImmediate(readAndTransformSimple, self, count, next, done);
-  }, done);
+    if (setImmediateDepth && setImmediateDepth < MAX_SET_IMMEDIATE_DEPTH)
+      readAndTransformSimple(self, count, next, setImmediateDepth, done);
+    else
+      setImmediate(readAndTransformSimple, self, count, next, 1, done);
+  }, setImmediateDepth, done);
 };
-function readAndTransformSimple(self, count, next, done) {
+function readAndTransformSimple(self, count, next, setImmediateDepth, done) {
   // Verify we have a readable source
   var source = self._source, item;
   if (!source || source.ended) {
@@ -1182,7 +1225,7 @@ function readAndTransformSimple(self, count, next, done) {
     self.close();
 
   // Try to read the next item until at least `count` items have been pushed
-  while (!self.closed && self._pushedCount < count && (item = source.read()) !== null) {
+  while (!self.closed && self._pushedCount < count && (item = source.read(setImmediateDepth)) !== null) {
     // Verify the item passes the filter and we've reached the offset
     if (!self._filter(item) || self._offset !== 0 && self._offset--)
       continue;
@@ -1192,11 +1235,11 @@ function readAndTransformSimple(self, count, next, done) {
     // Skip `null` items, pushing the original item if the mapping was optional
     if (mappedItem === null) {
       if (self._optional)
-        self._push(item);
+        self._push(item, setImmediateDepth);
     }
     // Skip the asynchronous phase if no transformation was specified
     else if (self._transform === null)
-      self._push(mappedItem);
+      self._push(mappedItem, setImmediateDepth);
     // Asynchronously transform the item, and wait for `next` to call back
     else {
       if (!self._optional)
@@ -1386,14 +1429,14 @@ function MultiTransformIterator(source, options) {
 TransformIterator.subclass(MultiTransformIterator);
 
 /* Tries to read and transform items */
-MultiTransformIterator.prototype._read = function (count, done) {
+MultiTransformIterator.prototype._read = function (count, done, setImmediateDepth) {
   // Remove transformers that have ended
   var item, head, transformer, transformerQueue = this._transformerQueue,
       source = this._source, optional = this._optional;
   while ((head = transformerQueue[0]) && head.transformer.ended) {
     // If transforming is optional, push the original item if none was pushed
     if (optional && head.item !== null)
-      this._push(head.item), count--;
+      this._push(head.item, setImmediateDepth), count--;
     // Remove listeners from the transformer
     head = transformerQueue.shift(), transformer = head.transformer;
     transformer.removeListener('end',      destinationFillBuffer);
@@ -1421,7 +1464,7 @@ MultiTransformIterator.prototype._read = function (count, done) {
   if (head) {
     transformer = head.transformer;
     while (count-- > 0 && (item = transformer.read()) !== null) {
-      this._push(item);
+      this._push(item, setImmediateDepth);
       // If a transformed item was pushed, no need to push the original anymore
       if (optional)
         head.item = null;
