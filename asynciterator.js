@@ -18,8 +18,8 @@ var MAX_SET_IMMEDIATE_DEPTH = 2048;
   @type String[]
   @protected
 */
-var STATES = AsyncIterator.STATES = ['INIT', 'OPEN', 'CLOSING', 'CLOSED', 'ENDED', 'DESTROYED'];
-var INIT = 0, OPEN = 1, CLOSING = 2, CLOSED = 3, ENDED = 4, DESTROYED = 5;
+var STATES = AsyncIterator.STATES = ['INIT', 'OPEN', 'CLOSING', 'CLOSED', 'ENDING', 'ENDED', 'DESTROYED'];
+var INIT = 0, OPEN = 1, CLOSING = 2, CLOSED = 3, ENDING = 4, ENDED = 5, DESTROYED = 6;
 STATES.forEach(function (state, id) { AsyncIterator[state] = id; });
 
 /**
@@ -59,6 +59,15 @@ STATES.forEach(function (state, id) { AsyncIterator[state] = id; });
   @type integer
   @protected
 */
+
+/**
+ ID of the ENDING state.
+ An iterator is ending if the ENDED state is pending.
+
+ @name AsyncIterator.ENDING
+ @type integer
+ @protected
+ */
 
 /**
   ID of the ENDED state.
@@ -271,7 +280,10 @@ AsyncIterator.prototype._end = function (destroy) {
   }
 };
 function end(self, destroy) { self._end(destroy); }
-function endAsync(self) { setImmediate(end, self); }
+function endAsync(self) {
+  if (self._changeState(ENDING))
+    setImmediate(end, self);
+}
 
 /**
   Emitted after the last item of the iterator has been read.
