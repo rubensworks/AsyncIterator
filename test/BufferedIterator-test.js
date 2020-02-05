@@ -2473,11 +2473,13 @@ describe('BufferedIterator', function () {
     var iterator, i = 0;
     before(function () {
       iterator = new BufferedIterator();
-      iterator._read = sinon.spy(function (count, next) {
-        this._push(++i);
-        next();
+      iterator._read = sinon.spy(function (count, next, setImmediateDepth) {
         if (i === 1)
           iterator.destroy();
+        else {
+          this._push(++i, setImmediateDepth);
+          next();
+        }
       });
       captureEvents(iterator, 'data', 'end', 'readable');
     });
