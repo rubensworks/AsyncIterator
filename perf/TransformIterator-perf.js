@@ -1,5 +1,19 @@
 Error.stackTraceLimit = 50;
 
+// Wrap setImmediate to count the number of calls
+// This will only work in Node.js
+var setImmediateCounter = 0;
+var setImmediateOld = setImmediate;
+setImmediate = function() {
+  setImmediateCounter++;
+  return setImmediateOld.apply(null, arguments);
+};
+function getSetImmediateCounter() {
+  var value = setImmediateCounter;
+  setImmediateCounter = 0;
+  return value;
+}
+
 var AsyncIterator = require('../asynciterator').AsyncIterator;
 
 /*
@@ -12,14 +26,14 @@ var STREAM_ELEMENTS = [1000, 10000, 100000];
 var STREAM_TRANSFORMERS = [1, 10, 100];
 
 (async function() {
-  console.log('elements:transformers:time');
+  console.log('elements:transformers:time(ms):setImmediates');
   for (var x = 0; x < STREAM_ELEMENTS.length; x++) {
     for (var y = 0; y < STREAM_TRANSFORMERS.length; y++) {
       var streamElements = STREAM_ELEMENTS[x];
       var streamTransformers = STREAM_TRANSFORMERS[y];
       var key = streamElements + ':' + streamTransformers;
 
-      console.time(key);
+      var timeStart = Date.now();
 
       var it = AsyncIterator.range(0, streamElements);
       for (var i = 0; i < streamTransformers; i++)
@@ -29,7 +43,9 @@ var STREAM_TRANSFORMERS = [1, 10, 100];
 
       it.on('data', noop);
       await new Promise(resolve => it.on('end', resolve));
-      console.timeEnd(key);
+
+      var timeEnd = Date.now();
+      console.log(streamElements + ':' + streamTransformers + ':' + (timeEnd - timeStart) + ':' + getSetImmediateCounter());
     }
   }
 
